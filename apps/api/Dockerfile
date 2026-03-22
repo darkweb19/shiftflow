@@ -13,11 +13,13 @@ COPY apps/api/ apps/api/
 RUN pnpm --filter @shiftflow/api build
 
 FROM node:20-alpine AS runner
-WORKDIR /app
+WORKDIR /app/apps/api
 ENV NODE_ENV=production
 
 COPY --from=build /app/apps/api/dist ./dist
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/apps/api/package.json ./package.json
+COPY --from=deps /app/node_modules /app/node_modules
+COPY --from=deps /app/apps/api/node_modules ./node_modules
 
 EXPOSE 3001
 CMD ["node", "dist/index.js"]

@@ -1,0 +1,41 @@
+"use client";
+
+import { format, parseISO } from "date-fns";
+import { StationBadge } from "./station-badge";
+import type { Shift } from "@/lib/types";
+
+function formatTime12h(time24: string): string {
+  const [h, m] = time24.split(":");
+  const hour = parseInt(h, 10);
+  const ampm = hour >= 12 ? "pm" : "am";
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${m}${ampm}`;
+}
+
+export function ShiftCard({ shift }: { shift: Shift }) {
+  const date = parseISO(shift.date);
+  const dayAbbr = format(date, "EEE").toUpperCase();
+  const monthDay = format(date, "MMM d");
+
+  return (
+    <div className="flex items-center gap-4 rounded-xl bg-[#FFF5F0] px-4 py-4 shadow-sm">
+      <div className="min-w-[60px] text-center">
+        <div className="text-sm font-bold text-[#3B6FB6]">{dayAbbr}</div>
+        <div className="text-xs text-gray-500">{monthDay}</div>
+      </div>
+
+      <div className="h-10 w-px bg-gray-200" />
+
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-[#D35649]">
+          {shift.role ?? "Shift"}
+        </div>
+        <div className="text-sm text-[#2D3748]">
+          {formatTime12h(shift.start_time)} to {formatTime12h(shift.end_time)}
+        </div>
+      </div>
+
+      <StationBadge station={shift.station} />
+    </div>
+  );
+}

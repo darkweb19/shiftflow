@@ -114,7 +114,7 @@ function parseModelJsonToSchedule(text: string): ParsedSchedule {
 	throw new Error(`Failed to parse AI schedule JSON: ${hint}`);
 }
 
-const SYSTEM_PROMPT = `You are a work schedule parser. You receive raw text extracted from a weekly work schedule PDF (like Chipotle format). The schedule is a table where:
+const SYSTEM_PROMPT = `You are a work schedule parser. You receive the actual weekly work schedule as a PDF document (e.g. Chipotle-style). Read the PDF visually — tables, headers, and cell layout — as the source of truth. The schedule is a table where:
 - Columns are ONE day each: read the printed column headers (Mon, Tue, … or dates) left-to-right. The leftmost schedule column is day 1, the next column is the next calendar day, etc.
 - Rows represent different employees
 - Each cell contains shift times (e.g., "3:00p-11:45p") and often a station code letter BEFORE the time
@@ -393,43 +393,43 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 	return result.text;
 }
 
-export async function extractShiftsWithAI(
-	rawText: string,
+/** Anthropic PDF input limit is ~32MB; stay under with base64 overhead. */
+const MAX_PDF_BYTES = 28 * 1024 * 1024;
+
+async function extractShiftsWithAI(
+	pdfBuffer: Buffer,
+	textForAnchorHints: string,
 	employeeName: string,
 ): Promise<ParsedSchedule> {
+	if (pdfBuffer.length > MAX_PDF_BYTES) {
+		throw new Error(
+			`PDF is too large (${Math.round(pdfBuffer.length / 1024 / 1024)}MB). Max ~28MB.`,
+		);
+	}
+
 	const client = getAnthropicClient();
 	const nameVariants = buildNameVariants(employeeName);
-	const anchor = extractScheduleAnchorFromRawText(rawText);
+	const anchor = extractScheduleAnchorFromRawText(textForAnchorHints);
 
 	const anchorInstructions = anchor
 		? `
-DETECTED_SCHEDULE_ANCHOR (parsed from the PDF text — you MUST align column dates to this):
-- The LEFTmost day column in the schedule grid corresponds to calendar date: ${anchor.firstColumnIso}
-${anchor.lastColumnIso ? `- Printed range ends around: ${anchor.lastColumnIso} (columns should span consecutive days between these)` : ""}
+DETECTED_SCHEDULE_ANCHOR (from a quick text pass on the same file — align with the PDF; if the PDF shows different dates, trust the PDF):
+- The LEFTmost day column in the schedule grid should correspond to calendar date: ${anchor.firstColumnIso}
+${anchor.lastColumnIso ? `- Printed range ends around: ${anchor.lastColumnIso}` : ""}
 - Each column to the right is the next calendar day.
 - Set "day" to the COLUMN weekday (Monday, Tuesday, …). Do not infer weekday from single letters inside cells (T/S/G/P/B/$ are stations).
 `
 		: `
-No week range was auto-detected in the first lines of text. Read any printed dates or day headers in the PDF and map columns left-to-right to consecutive calendar days. Do not substitute the current calendar week unless the PDF has no dates at all.
+No week range was auto-detected from a text extraction pass. Read printed dates and day headers directly in the PDF and map columns left-to-right to consecutive calendar days. Do not substitute the current calendar week unless the PDF has no dates at all.
 `;
 
-	const message = await client.messages.create({
-		model: "claude-sonnet-4-20250514",
-		max_tokens: 10000,
-		system: SYSTEM_PROMPT,
-		messages: [
-			{
-				role: "user",
-				content: `Employee canonical name: "${employeeName}"
-Employee name variants (all represent the same person): ${nameVariants
-					.map((n) => `"${n}"`)
-					.join(", ")}
-${anchorInstructions}
+	const userText = `The weekly schedule is attached as a PDF above. Use the PDF as the only source for the grid, times, and names.
 
-Raw schedule text:
----
-${rawText}
----
+Employee canonical name: "${employeeName}"
+Employee name variants (all represent the same person): ${nameVariants
+		.map((n) => `"${n}"`)
+		.join(", ")}
+${anchorInstructions}
 
 Return JSON with this exact structure (strict JSON: double-quoted keys and strings only, no trailing commas, no comments):
 {
@@ -458,7 +458,33 @@ Return JSON with this exact structure (strict JSON: double-quoted keys and strin
 
 Notes:
 - If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
-- coworkers: array of objects (not plain strings). List all other workers in that same day column with their own start, end, station, and role from the PDF. Include everyone scheduled that day even if times are identical.`,
+- coworkers: array of objects (not plain strings). List all other workers in that same day column with their own start, end, station, and role from the PDF. Include everyone scheduled that day even if times are identical.`;
+
+	const pdfBase64 = pdfBuffer.toString("base64");
+
+	const message = await client.beta.messages.create({
+		model: "claude-sonnet-4-20250514",
+		max_tokens: 10000,
+		betas: ["pdfs-2024-09-25"],
+		system: SYSTEM_PROMPT,
+		messages: [
+			{
+				role: "user",
+				content: [
+					{
+						type: "document",
+						source: {
+							type: "base64",
+							media_type: "application/pdf",
+							data: pdfBase64,
+						},
+						title: "weekly-schedule.pdf",
+					},
+					{
+						type: "text",
+						text: userText,
+					},
+				],
 			},
 		],
 	});
@@ -507,6 +533,14 @@ export async function processSchedulePdf(
 	pdfBuffer: Buffer,
 	employeeName: string,
 ): Promise<ParsedSchedule> {
-	const rawText = await extractTextFromPdf(pdfBuffer);
-	return extractShiftsWithAI(rawText, employeeName);
+	let textForAnchorHints = "";
+	try {
+		textForAnchorHints = await extractTextFromPdf(pdfBuffer);
+	} catch (e) {
+		console.warn(
+			"pdf-parse failed; continuing with PDF-only model input (date anchor hints may be weaker):",
+			e,
+		);
+	}
+	return extractShiftsWithAI(pdfBuffer, textForAnchorHints, employeeName);
 }

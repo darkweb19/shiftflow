@@ -9,7 +9,7 @@ Automated shift dashboard that ingests weekly schedule PDFs from Gmail and displ
 | Frontend | Next.js 15, Tailwind, shadcn/ui | Vercel |
 | Backend API | Express + TypeScript | Railway (Docker) |
 | Database + Auth + Storage | Supabase | Managed |
-| PDF Parsing | pdf-parse + Claude AI (Anthropic) | Inside backend |
+| PDF Parsing | Claude reads PDFs natively (beta); pdf-parse optional for date anchors | Inside backend |
 | Email Notifications | Gmail API + Google Cloud Pub/Sub | Push-based |
 
 ## Quick Start (Local Development)
@@ -143,7 +143,7 @@ shiftflow/
 3. **Optional — Manual:** User uploads a schedule PDF from **Settings** → `POST /schedule/upload` with Supabase JWT (same pipeline as email: storage, parse, shifts)
 4. When employer sends a new schedule email, Gmail notifies the backend via Pub/Sub webhook (if connected)
 5. Backend downloads/uploads the PDF, hashes it for dedup, stores in Supabase Storage
-6. `pdf-parse` extracts raw text → Claude AI extracts structured shift data for the user
+6. Claude (Messages API + `pdfs-2024-09-25`) reads the **PDF bytes** → structured shift JSON; `pdf-parse` may run locally only to hint week-start dates for alignment
 7. Shifts are upserted into the database
 8. Frontend displays them on the dashboard and schedule pages
 

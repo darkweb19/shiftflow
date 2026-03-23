@@ -1,13 +1,16 @@
 "use client";
 
 import { useCallback, useMemo } from "react";
-import { startOfWeek, addDays, subWeeks, addWeeks } from "date-fns";
-import { formatInTimeZone, toZonedTime } from "date-fns-tz";
+import { formatInTimeZone } from "date-fns-tz";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
+  addDaysToIso,
+  getWorkplaceWeekRange,
+  getWorkplaceYmd,
   isSameWorkplaceCalendarDay,
   isWorkplaceToday,
+  noonUtcFromIso,
   WORKPLACE_TZ,
 } from "@/lib/workplace-time";
 
@@ -18,22 +21,35 @@ interface WeekPickerProps {
 
 /** Week strip + arrows stay in sync with selectedDate (no desynced internal week state). */
 export function WeekPicker({ selectedDate, onDateChange }: WeekPickerProps) {
-  const weekStart = useMemo(() => {
-    const z = toZonedTime(selectedDate, WORKPLACE_TZ);
-    return startOfWeek(z, { weekStartsOn: 1 });
-  }, [selectedDate]);
+  const { from: mondayIso } = useMemo(
+    () => getWorkplaceWeekRange(selectedDate),
+    [selectedDate]
+  );
 
+  /** Build 7 Date objects (UTC noon anchors) for Mon–Sun, safe for formatInTimeZone. */
   const days = useMemo(
-    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
-    [weekStart]
+    () =>
+      Array.from({ length: 7 }, (_, i) => {
+        const iso = addDaysToIso(mondayIso, i);
+        return noonUtcFromIso(iso);
+      }),
+    [mondayIso]
   );
 
   const goBack = useCallback(() => {
-    onDateChange(subWeeks(selectedDate, 1));
+    const prevMondayIso = addDaysToIso(
+      getWorkplaceYmd(selectedDate),
+      -7
+    );
+    onDateChange(noonUtcFromIso(prevMondayIso));
   }, [selectedDate, onDateChange]);
 
   const goForward = useCallback(() => {
-    onDateChange(addWeeks(selectedDate, 1));
+    const nextMondayIso = addDaysToIso(
+      getWorkplaceYmd(selectedDate),
+      7
+    );
+    onDateChange(noonUtcFromIso(nextMondayIso));
   }, [selectedDate, onDateChange]);
 
   return (

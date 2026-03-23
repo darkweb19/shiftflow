@@ -1,4 +1,3 @@
-import pdfParse from "pdf-parse";
 import { getEnv } from "../config";
 import { getOpenAIClient } from "../lib/openai";
 
@@ -105,12 +104,12 @@ function parseModelJsonToSchedule(text: string): ParsedSchedule {
 	throw new Error(`Failed to parse AI schedule JSON: ${hint}`);
 }
 
-const SYSTEM_PROMPT = `You are a work schedule parser for ONE employee only. You receive a weekly work schedule PDF (e.g. Chipotle-style). Read the PDF visually — tables, headers, and cell layout — as the source of truth. The schedule is a table where:
+const SYSTEM_PROMPT = `You are a work schedule parser for ONE employee only. You receive a weekly work schedule PDF (e.g. Chipotle-style). Read the PDF visually — tables, headers, and cell layout — as the ONLY source of truth. The schedule is a table where:
 - Columns are ONE day each: read the printed column headers (Mon, Tue, … or dates) left-to-right. The leftmost schedule column is day 1, the next column is the next calendar day, etc.
 - Rows represent different employees
 - Each cell contains shift times (e.g., "3:00p-11:45p") and often a station code letter BEFORE the time
 
-Extract ONLY the shifts for the single named employee in the user message. Do not include any other person’s shifts, names, or a "coworkers" list — ignore everyone else on the schedule entirely.
+Extract ONLY the shifts for the single named employee in the user message. Do not include any other person's shifts, names, or a "coworkers" list — ignore everyone else on the schedule entirely.
 Return valid JSON only, no markdown fences.
 
 Accuracy is critical:
@@ -118,7 +117,7 @@ Accuracy is critical:
 - Do not invent, smooth, or "fix" schedule entries.
 - If a cell is unreadable or ambiguous, skip that shift instead of guessing.
 
-When matching that employee’s row, treat all provided name variants as the SAME person.
+When matching that employee's row, treat all provided name variants as the SAME person.
 Name matching rules:
 - Ignore case differences
 - Ignore commas, periods, and extra spaces
@@ -131,8 +130,8 @@ CRITICAL — station codes vs weekdays:
 - The weekday for each shift MUST come from the COLUMN HEADER only (e.g. MON, Monday, or a date under that column).
 
 Date rules:
-- If the user message includes DETECTED_SCHEDULE_ANCHOR dates from the PDF, you MUST set each shift's "date" and "day" to match that grid: leftmost column = anchor date, then each column to the right is the next calendar day.
-- "weekStart" / "weekEnd" in JSON must match the actual printed week in the PDF (not "today" and not a guess).
+- Read the printed dates and day headers DIRECTLY from the PDF. Map columns left-to-right to consecutive calendar days.
+- "weekStart" / "weekEnd" in JSON must match the actual printed week range in the PDF (not "today" and not a guess).
 - Only if there is truly no date or header information anywhere, infer a week — otherwise never substitute the current calendar week.
 
 Split shifts:
@@ -186,19 +185,6 @@ function pad2(n: number): string {
 	return String(n).padStart(2, "0");
 }
 
-/** Parse US-style M/D/YYYY (or M-D-YY) into YYYY-MM-DD. */
-function parseUsDateToIso(
-	month: number,
-	day: number,
-	yearIn: number,
-): string | null {
-	if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-	let year = yearIn;
-	if (year < 100) year += 2000;
-	if (year < 2000 || year > 2100) return null;
-	return `${year}-${pad2(month)}-${pad2(day)}`;
-}
-
 function utcDowFromIso(iso: string): number {
 	const [y, m, d] = iso.split("-").map(Number);
 	return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
@@ -215,89 +201,6 @@ function mondayOfWeekContaining(iso: string): string {
 	const dow = utcDowFromIso(iso);
 	const daysSinceMonday = (dow + 6) % 7;
 	return addDaysIso(iso, -daysSinceMonday);
-}
-
-/** Map AI "day" string to JS getUTCDay() (Sun=0 … Sat=6). */
-function parseDayNameToUtcDow(day: string | undefined): number | null {
-	if (!day) return null;
-	const n = day.trim().toLowerCase().replace(/\./g, "");
-	if (n.startsWith("sun")) return 0;
-	if (n.startsWith("mon")) return 1;
-	if (n.startsWith("tue")) return 2;
-	if (n.startsWith("wed")) return 3;
-	if (n.startsWith("thu")) return 4;
-	if (n.startsWith("fri")) return 5;
-	if (n.startsWith("sat")) return 6;
-	return null;
-}
-
-/**
- * Try to read a printed week range from extracted PDF text (often near the top).
- * Returns the calendar date for the LEFTmost day column (chronologically first of the pair).
- */
-export function extractScheduleAnchorFromRawText(text: string): {
-	firstColumnIso: string;
-	lastColumnIso?: string;
-} | null {
-	const head = text.slice(0, 8000);
-
-	const rangeRe =
-		/\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\s*[-–—]\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b/g;
-	let match: RegExpExecArray | null;
-	while ((match = rangeRe.exec(head)) !== null) {
-		const iso1 = parseUsDateToIso(
-			Number(match[1]),
-			Number(match[2]),
-			Number(match[3]),
-		);
-		const iso2 = parseUsDateToIso(
-			Number(match[4]),
-			Number(match[5]),
-			Number(match[6]),
-		);
-		if (!iso1 || !iso2) continue;
-		const [first, last] = iso1 <= iso2 ? [iso1, iso2] : [iso2, iso1];
-		const spanExclusive = Math.round(
-			(Date.parse(`${last}T12:00:00Z`) -
-				Date.parse(`${first}T12:00:00Z`)) /
-				86400000,
-		);
-		const inclusiveDays = spanExclusive + 1;
-		if (inclusiveDays >= 6 && inclusiveDays <= 8) {
-			return { firstColumnIso: first, lastColumnIso: last };
-		}
-	}
-
-	const weekOf = head.match(
-		/week\s+of:?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/i,
-	);
-	if (weekOf) {
-		const iso = parseUsDateToIso(
-			Number(weekOf[1]),
-			Number(weekOf[2]),
-			Number(weekOf[3]),
-		);
-		if (iso) return { firstColumnIso: iso };
-	}
-
-	return null;
-}
-
-/**
- * Recompute each shift's calendar date from the weekday name + known first-column date.
- * Fixes off-by-one errors when the model mis-maps columns to dates.
- */
-function realignShiftDatesToFirstColumn(
-	shifts: ParsedShift[],
-	firstColumnIso: string,
-): ParsedShift[] {
-	const firstDow = utcDowFromIso(firstColumnIso);
-	return shifts.map((shift) => {
-		const targetDow = parseDayNameToUtcDow(shift.day);
-		if (targetDow === null) return shift;
-		const delta = (targetDow - firstDow + 7) % 7;
-		return { ...shift, date: addDaysIso(firstColumnIso, delta) };
-	});
 }
 
 function syncWeekBoundsFromShifts(schedule: ParsedSchedule): void {
@@ -365,17 +268,11 @@ function expandMultiSegmentShifts(shifts: ParsedShift[]): ParsedShift[] {
 	return expanded;
 }
 
-export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
-	const result = await pdfParse(buffer);
-	return result.text;
-}
-
 /** OpenAI file input limit is 50MB per file; stay under with base64 data-URL overhead. */
 const MAX_PDF_BYTES = 45 * 1024 * 1024;
 
 async function extractShiftsWithAI(
 	pdfBuffer: Buffer,
-	textForAnchorHints: string,
 	employeeName: string,
 ): Promise<ParsedSchedule> {
 	if (pdfBuffer.length > MAX_PDF_BYTES) {
@@ -387,27 +284,15 @@ async function extractShiftsWithAI(
 	const client = getOpenAIClient();
 	const { OPENAI_MODEL } = getEnv();
 	const nameVariants = buildNameVariants(employeeName);
-	const anchor = extractScheduleAnchorFromRawText(textForAnchorHints);
 
-	const anchorInstructions = anchor
-		? `
-DETECTED_SCHEDULE_ANCHOR (from a quick text pass on the same file — align with the PDF; if the PDF shows different dates, trust the PDF):
-- The LEFTmost day column in the schedule grid should correspond to calendar date: ${anchor.firstColumnIso}
-${anchor.lastColumnIso ? `- Printed range ends around: ${anchor.lastColumnIso}` : ""}
-- Each column to the right is the next calendar day.
-- Set "day" to the COLUMN weekday (Monday, Tuesday, …). Do not infer weekday from single letters inside cells (T/S/G/P/B/$ are stations).
-`
-		: `
-No week range was auto-detected from a text extraction pass. Read printed dates and day headers directly in the PDF and map columns left-to-right to consecutive calendar days. Do not substitute the current calendar week unless the PDF has no dates at all.
-`;
-
-	const userText = `The weekly schedule is attached as a PDF above. Use the PDF as the only source for the grid, times, and names.
+	const userText = `The weekly schedule is attached as a PDF. Read the PDF visually as the ONLY source of truth for the grid, dates, times, and names. Do NOT rely on any text extraction — use only what you can see in the PDF layout.
 
 Employee canonical name: "${employeeName}"
 Employee name variants (all represent the same person): ${nameVariants
 		.map((n) => `"${n}"`)
 		.join(", ")}
-${anchorInstructions}
+
+Read the printed dates and day headers directly from the PDF. Map columns left-to-right to consecutive calendar days. Do not substitute the current calendar week unless the PDF has no dates at all.
 
 Return JSON with this exact structure (strict JSON: double-quoted keys and strings only, no trailing commas, no comments). Do not add "coworkers" or any extra keys:
 {
@@ -472,12 +357,7 @@ Notes:
 		throw new Error("Invalid schedule format from OpenAI");
 	}
 
-	let shifts: ParsedShift[] = expandMultiSegmentShifts(parsed.shifts);
-
-	if (anchor) {
-		shifts = realignShiftDatesToFirstColumn(shifts, anchor.firstColumnIso);
-	}
-	parsed.shifts = shifts;
+	parsed.shifts = expandMultiSegmentShifts(parsed.shifts);
 	syncWeekBoundsFromShifts(parsed);
 
 	return parsed;
@@ -487,14 +367,5 @@ export async function processSchedulePdf(
 	pdfBuffer: Buffer,
 	employeeName: string,
 ): Promise<ParsedSchedule> {
-	let textForAnchorHints = "";
-	try {
-		textForAnchorHints = await extractTextFromPdf(pdfBuffer);
-	} catch (e) {
-		console.warn(
-			"pdf-parse failed; continuing with PDF-only model input (date anchor hints may be weaker):",
-			e,
-		);
-	}
-	return extractShiftsWithAI(pdfBuffer, textForAnchorHints, employeeName);
+	return extractShiftsWithAI(pdfBuffer, employeeName);
 }

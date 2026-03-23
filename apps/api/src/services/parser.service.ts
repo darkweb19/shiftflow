@@ -1,6 +1,15 @@
 import pdfParse from "pdf-parse";
 import { getAnthropicClient } from "../lib/anthropic";
 
+/** Coworker row for the same day column as the employee shift (their times + station from PDF). */
+export interface ParsedCoworkerShift {
+  name: string;
+  start: string;
+  end: string;
+  station: string | null;
+  role: string | null;
+}
+
 export interface ParsedShift {
   date: string;
   day: string;
@@ -8,7 +17,7 @@ export interface ParsedShift {
   end: string;
   role: string | null;
   station: string | null;
-  coworkers?: string[];
+  coworkers?: Array<ParsedCoworkerShift | string>;
 }
 
 export interface ParsedSchedule {
@@ -18,9 +27,9 @@ export interface ParsedSchedule {
 }
 
 const SYSTEM_PROMPT = `You are a work schedule parser. You receive raw text extracted from a weekly work schedule PDF (like Chipotle format). The schedule is a table where:
-- Columns represent days of the week (Monday through Sunday)
+- Columns are ONE day each: read the printed column headers (Mon, Tue, … or dates) left-to-right. The leftmost schedule column is day 1, the next column is the next calendar day, etc.
 - Rows represent different employees
-- Each cell contains shift times (e.g., "3:00p-11:45p") and possibly role/station codes
+- Each cell contains shift times (e.g., "3:00p-11:45p") and often a station code letter BEFORE the time
 
 Extract ONLY the shifts for the specified employee. Return valid JSON only, no markdown fences.
 When matching the employee row, treat all provided name variants as the SAME person.
@@ -29,15 +38,25 @@ Name matching rules:
 - Ignore commas, periods, and extra spaces
 - Consider "First Last" and "Last, First" equivalent
 - Use the closest exact row match to the provided variants
-- IMPORTANT: if a single day cell has multiple segments (for example "T 8:00a-1:00p" and "S 3:00p-6:00p"),
-  output EACH segment as a separate shift object for that same date.
-- A split shift with a gap (e.g. 8:00a-1:00p and 3:00p-6:00p) is NOT one continuous shift.
-- Infer station from the segment code when present (examples: G=Grill, B=Board, $=Cashier, P=Prep, T, S).
-- For each returned shift segment, include coworkers who overlap in time on that date.
 
-Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo.
-Convert all times to 24-hour format (HH:MM). Omit days with no shift.
-If you cannot determine the exact dates, use the current week's dates starting from Monday.`;
+CRITICAL — station codes vs weekdays:
+- Letters like T, S, G, P, B, $ at the start of a cell (before times) are STATION / role codes (e.g. Tortilla, Salsa, Grill, Prep, Board, Cashier) — NOT weekdays.
+- NEVER treat "T" as Tuesday or "S" as Saturday/Sunday from inside a cell.
+- The weekday for each shift MUST come from the COLUMN HEADER only (e.g. MON, Monday, or a date under that column).
+
+Date rules:
+- If the user message includes DETECTED_SCHEDULE_ANCHOR dates from the PDF, you MUST set each shift's "date" and "day" to match that grid: leftmost column = anchor date, then each column to the right is the next calendar day.
+- "weekStart" / "weekEnd" in JSON must match the actual printed week in the PDF (not "today" and not a guess).
+- Only if there is truly no date or header information anywhere, infer a week — otherwise never substitute the current calendar week.
+
+Split shifts:
+- If a single day cell has multiple segments (e.g. "T 8:00a-1:00p" and "S 3:00p-6:00p" where T and S are stations), output EACH segment as a separate shift for that SAME column date.
+- A split shift with a gap is NOT one continuous shift.
+
+Coworkers: For each employee shift segment, list EVERY other worker scheduled that same calendar day column with their own shift details (even if times match exactly). For each coworker include: name, their start/end in 24-hour HH:MM, station (Grill, Board, Cashier, etc.), and role/job title if visible. Read their row in the PDF for that day column.
+
+Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo (and T/S etc. as stations when not column headers).
+Convert all times to 24-hour format (HH:MM). Omit days with no shift.`;
 
 function normalizeName(name: string): string {
   return name
@@ -45,6 +64,28 @@ function normalizeName(name: string): string {
     .replace(/[.,]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeCoworkerEntry(
+  raw: unknown,
+  employeeName: string
+): ParsedCoworkerShift | null {
+  if (typeof raw === "string") {
+    const name = raw.trim();
+    if (!name || normalizeName(name) === normalizeName(employeeName)) return null;
+    return { name, start: "", end: "", station: null, role: null };
+  }
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    const name = String(o.name ?? o.coworker_name ?? "").trim();
+    if (!name || normalizeName(name) === normalizeName(employeeName)) return null;
+    const start = String(o.start ?? o.start_time ?? "").trim();
+    const end = String(o.end ?? o.end_time ?? "").trim();
+    const station = o.station != null && o.station !== "" ? String(o.station).trim() : null;
+    const role = o.role != null && o.role !== "" ? String(o.role).trim() : null;
+    return { name, start, end, station, role };
+  }
+  return null;
 }
 
 function buildNameVariants(employeeName: string): string[] {
@@ -72,6 +113,115 @@ function buildNameVariants(employeeName: string): string[] {
   }
 
   return Array.from(variants).filter(Boolean);
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Parse US-style M/D/YYYY (or M-D-YY) into YYYY-MM-DD. */
+function parseUsDateToIso(month: number, day: number, yearIn: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  let year = yearIn;
+  if (year < 100) year += 2000;
+  if (year < 2000 || year > 2100) return null;
+  return `${year}-${pad2(month)}-${pad2(day)}`;
+}
+
+function utcDowFromIso(iso: string): number {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+function addDaysIso(iso: string, deltaDays: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const t = Date.UTC(y, m - 1, d) + deltaDays * 86400000;
+  const dt = new Date(t);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+function mondayOfWeekContaining(iso: string): string {
+  const dow = utcDowFromIso(iso);
+  const daysSinceMonday = (dow + 6) % 7;
+  return addDaysIso(iso, -daysSinceMonday);
+}
+
+/** Map AI "day" string to JS getUTCDay() (Sun=0 … Sat=6). */
+function parseDayNameToUtcDow(day: string | undefined): number | null {
+  if (!day) return null;
+  const n = day.trim().toLowerCase().replace(/\./g, "");
+  if (n.startsWith("sun")) return 0;
+  if (n.startsWith("mon")) return 1;
+  if (n.startsWith("tue")) return 2;
+  if (n.startsWith("wed")) return 3;
+  if (n.startsWith("thu")) return 4;
+  if (n.startsWith("fri")) return 5;
+  if (n.startsWith("sat")) return 6;
+  return null;
+}
+
+/**
+ * Try to read a printed week range from extracted PDF text (often near the top).
+ * Returns the calendar date for the LEFTmost day column (chronologically first of the pair).
+ */
+export function extractScheduleAnchorFromRawText(text: string): {
+  firstColumnIso: string;
+  lastColumnIso?: string;
+} | null {
+  const head = text.slice(0, 8000);
+
+  const rangeRe =
+    /\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\s*[-–—]\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = rangeRe.exec(head)) !== null) {
+    const iso1 = parseUsDateToIso(Number(match[1]), Number(match[2]), Number(match[3]));
+    const iso2 = parseUsDateToIso(Number(match[4]), Number(match[5]), Number(match[6]));
+    if (!iso1 || !iso2) continue;
+    const [first, last] = iso1 <= iso2 ? [iso1, iso2] : [iso2, iso1];
+    const spanExclusive = Math.round(
+      (Date.parse(`${last}T12:00:00Z`) - Date.parse(`${first}T12:00:00Z`)) / 86400000
+    );
+    const inclusiveDays = spanExclusive + 1;
+    if (inclusiveDays >= 6 && inclusiveDays <= 8) {
+      return { firstColumnIso: first, lastColumnIso: last };
+    }
+  }
+
+  const weekOf = head.match(/week\s+of:?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/i);
+  if (weekOf) {
+    const iso = parseUsDateToIso(Number(weekOf[1]), Number(weekOf[2]), Number(weekOf[3]));
+    if (iso) return { firstColumnIso: iso };
+  }
+
+  return null;
+}
+
+/**
+ * Recompute each shift's calendar date from the weekday name + known first-column date.
+ * Fixes off-by-one errors when the model mis-maps columns to dates.
+ */
+function realignShiftDatesToFirstColumn(
+  shifts: ParsedShift[],
+  firstColumnIso: string
+): ParsedShift[] {
+  const firstDow = utcDowFromIso(firstColumnIso);
+  return shifts.map((shift) => {
+    const targetDow = parseDayNameToUtcDow(shift.day);
+    if (targetDow === null) return shift;
+    const delta = (targetDow - firstDow + 7) % 7;
+    return { ...shift, date: addDaysIso(firstColumnIso, delta) };
+  });
+}
+
+function syncWeekBoundsFromShifts(schedule: ParsedSchedule): void {
+  const dates = schedule.shifts.map((s) => s.date).filter(Boolean).sort();
+  if (dates.length === 0) return;
+  const min = dates[0];
+  const max = dates[dates.length - 1];
+  const startMonday = mondayOfWeekContaining(min);
+  const endMonday = mondayOfWeekContaining(max);
+  schedule.weekStart = startMonday;
+  schedule.weekEnd = addDaysIso(endMonday, 6);
 }
 
 function expandMultiSegmentShifts(shifts: ParsedShift[]): ParsedShift[] {
@@ -136,10 +286,23 @@ export async function extractShiftsWithAI(
 ): Promise<ParsedSchedule> {
   const client = getAnthropicClient();
   const nameVariants = buildNameVariants(employeeName);
+  const anchor = extractScheduleAnchorFromRawText(rawText);
+
+  const anchorInstructions = anchor
+    ? `
+DETECTED_SCHEDULE_ANCHOR (parsed from the PDF text — you MUST align column dates to this):
+- The LEFTmost day column in the schedule grid corresponds to calendar date: ${anchor.firstColumnIso}
+${anchor.lastColumnIso ? `- Printed range ends around: ${anchor.lastColumnIso} (columns should span consecutive days between these)` : ""}
+- Each column to the right is the next calendar day.
+- Set "day" to the COLUMN weekday (Monday, Tuesday, …). Do not infer weekday from single letters inside cells (T/S/G/P/B/$ are stations).
+`
+    : `
+No week range was auto-detected in the first lines of text. Read any printed dates or day headers in the PDF and map columns left-to-right to consecutive calendar days. Do not substitute the current calendar week unless the PDF has no dates at all.
+`;
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-20250514",
-    max_tokens: 2048,
+    max_tokens: 3072,
     system: SYSTEM_PROMPT,
     messages: [
       {
@@ -148,6 +311,7 @@ export async function extractShiftsWithAI(
 Employee name variants (all represent the same person): ${nameVariants
           .map((n) => `"${n}"`)
           .join(", ")}
+${anchorInstructions}
 
 Raw schedule text:
 ---
@@ -166,14 +330,22 @@ Return JSON with this exact structure:
       "end": "HH:MM",
       "role": "Kitchen Staff",
       "station": "Grill",
-      "coworkers": ["First Last", "Last, First"]
+      "coworkers": [
+        {
+          "name": "First Last",
+          "start": "10:00",
+          "end": "22:30",
+          "station": "Board",
+          "role": "Kitchen Staff"
+        }
+      ]
     }
   ]
 }
 
 Notes:
-- If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects.
-- coworkers must be for the SAME date and overlapping time window of that shift segment.`,
+- If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
+- coworkers: array of objects (not plain strings). List all other workers in that same day column with their own start, end, station, and role from the PDF. Include everyone scheduled that day even if times are identical.`,
       },
     ],
   });
@@ -190,23 +362,29 @@ Notes:
     throw new Error("Invalid schedule format from Claude");
   }
 
-  parsed.shifts = expandMultiSegmentShifts(parsed.shifts).map((shift) => {
+  let shifts: ParsedShift[] = expandMultiSegmentShifts(parsed.shifts).map((shift) => {
     const seen = new Set<string>();
-    const coworkers = (shift.coworkers ?? [])
-      .map((name) => name.trim())
-      .filter((name) => !!name && normalizeName(name) !== normalizeName(employeeName))
-      .filter((name) => {
-        const key = normalizeName(name);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+    const coworkers: ParsedCoworkerShift[] = [];
+    for (const raw of shift.coworkers ?? []) {
+      const c = normalizeCoworkerEntry(raw, employeeName);
+      if (!c) continue;
+      const key = normalizeName(c.name);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      coworkers.push(c);
+    }
 
     return {
       ...shift,
       coworkers,
     };
   });
+
+  if (anchor) {
+    shifts = realignShiftDatesToFirstColumn(shifts, anchor.firstColumnIso);
+  }
+  parsed.shifts = shifts;
+  syncWeekBoundsFromShifts(parsed);
 
   return parsed;
 }

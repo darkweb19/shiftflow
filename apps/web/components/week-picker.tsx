@@ -1,37 +1,40 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import {
-  startOfWeek,
-  addDays,
-  subWeeks,
-  addWeeks,
-  format,
-  isSameDay,
-  isToday,
-} from "date-fns";
+import { useCallback, useMemo } from "react";
+import { startOfWeek, addDays, subWeeks, addWeeks } from "date-fns";
+import { formatInTimeZone, toZonedTime } from "date-fns-tz";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  isSameWorkplaceCalendarDay,
+  isWorkplaceToday,
+  WORKPLACE_TZ,
+} from "@/lib/workplace-time";
 
 interface WeekPickerProps {
   selectedDate: Date;
   onDateChange: (date: Date) => void;
 }
 
+/** Week strip + arrows stay in sync with selectedDate (no desynced internal week state). */
 export function WeekPicker({ selectedDate, onDateChange }: WeekPickerProps) {
-  const [weekStart, setWeekStart] = useState(() =>
-    startOfWeek(selectedDate, { weekStartsOn: 1 })
+  const weekStart = useMemo(() => {
+    const z = toZonedTime(selectedDate, WORKPLACE_TZ);
+    return startOfWeek(z, { weekStartsOn: 1 });
+  }, [selectedDate]);
+
+  const days = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
+    [weekStart]
   );
 
-  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-
   const goBack = useCallback(() => {
-    setWeekStart((prev) => subWeeks(prev, 1));
-  }, []);
+    onDateChange(subWeeks(selectedDate, 1));
+  }, [selectedDate, onDateChange]);
 
   const goForward = useCallback(() => {
-    setWeekStart((prev) => addWeeks(prev, 1));
-  }, []);
+    onDateChange(addWeeks(selectedDate, 1));
+  }, [selectedDate, onDateChange]);
 
   return (
     <div className="flex items-center gap-1">
@@ -45,8 +48,8 @@ export function WeekPicker({ selectedDate, onDateChange }: WeekPickerProps) {
 
       <div className="flex flex-1 justify-around gap-1">
         {days.map((day) => {
-          const selected = isSameDay(day, selectedDate);
-          const today = isToday(day);
+          const selected = isSameWorkplaceCalendarDay(day, selectedDate);
+          const today = isWorkplaceToday(day);
           return (
             <button
               key={day.toISOString()}
@@ -59,12 +62,14 @@ export function WeekPicker({ selectedDate, onDateChange }: WeekPickerProps) {
                 today && !selected && "ring-1 ring-white/50"
               )}
             >
-              <span className="font-medium">{format(day, "EEE")}</span>
+              <span className="font-medium">
+                {formatInTimeZone(day, WORKPLACE_TZ, "EEE")}
+              </span>
               <span className="text-lg font-bold leading-tight">
-                {format(day, "d")}
+                {formatInTimeZone(day, WORKPLACE_TZ, "d")}
               </span>
               <span className="uppercase text-[10px] tracking-wider opacity-80">
-                {format(day, "MMM")}
+                {formatInTimeZone(day, WORKPLACE_TZ, "MMM")}
               </span>
             </button>
           );

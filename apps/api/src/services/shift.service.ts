@@ -87,6 +87,10 @@ export async function saveShiftCoworkers(
     user_id: string;
     shift_id: string;
     coworker_name: string;
+    start_time: string | null;
+    end_time: string | null;
+    station: string | null;
+    role: string | null;
   }> = [];
 
   for (const shift of schedule.shifts) {
@@ -96,11 +100,22 @@ export async function saveShiftCoworkers(
     const shiftId = shiftKeyToId.get(key);
     if (!shiftId) continue;
 
-    for (const coworkerName of shift.coworkers ?? []) {
+    for (const c of shift.coworkers ?? []) {
+      const name = typeof c === "string" ? c.trim() : c.name?.trim();
+      if (!name) continue;
+      const start =
+        typeof c === "string" ? null : c.start ? normalizeTimeForKey(c.start) : null;
+      const end = typeof c === "string" ? null : c.end ? normalizeTimeForKey(c.end) : null;
+      const station = typeof c === "string" ? null : c.station?.trim() || null;
+      const role = typeof c === "string" ? null : c.role?.trim() || null;
       coworkerRows.push({
         user_id: userId,
         shift_id: shiftId,
-        coworker_name: coworkerName,
+        coworker_name: name,
+        start_time: start,
+        end_time: end,
+        station,
+        role,
       });
     }
   }

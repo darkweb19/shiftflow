@@ -16,6 +16,11 @@ export interface ShiftCoworker {
   user_id: string;
   shift_id: string;
   coworker_name: string;
+  /** 24h HH:MM from PDF (workplace local) */
+  start_time: string | null;
+  end_time: string | null;
+  station: string | null;
+  role: string | null;
   created_at: string;
 }
 

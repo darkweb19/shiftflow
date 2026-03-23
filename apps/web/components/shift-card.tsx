@@ -1,21 +1,25 @@
 "use client";
 
-import { format, parseISO } from "date-fns";
 import { StationBadge } from "./station-badge";
 import type { Shift } from "@/lib/types";
+import { formatShiftStoredDate } from "@/lib/workplace-time";
 
 function formatTime12h(time24: string): string {
-  const [h, m] = time24.split(":");
+  const parts = time24.split(":").filter(Boolean);
+  const h = parts[0] ?? "0";
+  const m = (parts[1] ?? "00").slice(0, 2);
   const hour = parseInt(h, 10);
+  if (Number.isNaN(hour)) return time24;
   const ampm = hour >= 12 ? "pm" : "am";
   const hour12 = hour % 12 || 12;
   return `${hour12}:${m}${ampm}`;
 }
 
 export function ShiftCard({ shift }: { shift: Shift }) {
-  const date = parseISO(shift.date);
-  const dayAbbr = format(date, "EEE").toUpperCase();
-  const monthDay = format(date, "MMM d");
+  const label = formatShiftStoredDate(shift.date);
+  const [weekdayPart, ...rest] = label.split(",");
+  const dayAbbr = (weekdayPart ?? "").trim().toUpperCase();
+  const monthDay = rest.join(",").trim();
 
   return (
     <div className="flex items-center gap-4 rounded-xl bg-[#FFF5F0] px-4 py-4 shadow-sm">

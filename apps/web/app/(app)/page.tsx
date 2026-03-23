@@ -1,17 +1,17 @@
 import { createServerSupabase } from "@/lib/supabase/server";
-import { format } from "date-fns";
 import { User } from "lucide-react";
 import { ShiftCard } from "@/components/shift-card";
 import type { Shift } from "@/lib/types";
+import { getWorkplaceWeekRange, getWorkplaceYmd } from "@/lib/workplace-time";
 
 export default async function DashboardPage() {
   const supabase = await createServerSupabase();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  await supabase.auth.getUser();
 
-  const today = format(new Date(), "yyyy-MM-dd");
+  const now = new Date();
+  const today = getWorkplaceYmd(now);
+  const { from: weekStart, to: weekEnd } = getWorkplaceWeekRange(now);
 
   const { data: todayShifts } = await supabase
     .from("shifts")
@@ -19,10 +19,23 @@ export default async function DashboardPage() {
     .eq("date", today)
     .order("start_time");
 
+  // Rest of this calendar week (Mon–Sun) so you still see shifts if “today” is empty
+  const { data: weekShiftsRaw } = await supabase
+    .from("shifts")
+    .select("*")
+    .gte("date", weekStart)
+    .lte("date", weekEnd)
+    .order("date")
+    .order("start_time");
+
+  const weekShiftsNotToday = ((weekShiftsRaw as Shift[] | null) ?? []).filter(
+    (s) => s.date !== today
+  );
+
   const { data: upcomingShifts } = await supabase
     .from("shifts")
     .select("*")
-    .gt("date", today)
+    .gt("date", weekEnd)
     .order("date")
     .order("start_time")
     .limit(10);
@@ -60,10 +73,31 @@ export default async function DashboardPage() {
           )}
         </section>
 
-        {/* Upcoming Shifts */}
+        {/* Rest of this week */}
         <section>
           <h2 className="mb-1 text-lg font-semibold text-[#2D3748]">
-            Your Upcoming Shifts
+            Rest of this week
+          </h2>
+          <div className="mb-3 h-0.5 w-20 rounded bg-[#3B6FB6]" />
+
+          {weekShiftsNotToday.length ? (
+            <div className="space-y-3">
+              {weekShiftsNotToday.map((shift) => (
+                <ShiftCard key={shift.id} shift={shift} />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl bg-gray-100 px-4 py-6 text-center text-sm text-gray-400">
+              No other shifts Mon–Sun. Open <strong>Schedule</strong> and use the
+              arrows to jump to the week in your PDF.
+            </div>
+          )}
+        </section>
+
+        {/* After this week */}
+        <section>
+          <h2 className="mb-1 text-lg font-semibold text-[#2D3748]">
+            Later
           </h2>
           <div className="mb-3 h-0.5 w-20 rounded bg-[#3B6FB6]" />
 
@@ -75,7 +109,7 @@ export default async function DashboardPage() {
             </div>
           ) : (
             <div className="rounded-xl bg-gray-100 px-4 py-6 text-center text-sm text-gray-400">
-              No upcoming shifts found. Connect Gmail to sync your schedule.
+              Nothing scheduled after this week.
             </div>
           )}
         </section>

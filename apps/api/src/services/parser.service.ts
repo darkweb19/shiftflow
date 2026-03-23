@@ -113,6 +113,11 @@ const SYSTEM_PROMPT = `You are a work schedule parser for ONE employee only. You
 Extract ONLY the shifts for the single named employee in the user message. Do not include any other person’s shifts, names, or a "coworkers" list — ignore everyone else on the schedule entirely.
 Return valid JSON only, no markdown fences.
 
+Accuracy is critical:
+- The output must match the PDF for this employee exactly (same worked days, same shift segments, same times, same station/role context).
+- Do not invent, smooth, or "fix" schedule entries.
+- If a cell is unreadable or ambiguous, skip that shift instead of guessing.
+
 When matching that employee’s row, treat all provided name variants as the SAME person.
 Name matching rules:
 - Ignore case differences
@@ -135,7 +140,12 @@ Split shifts:
 - A split shift with a gap is NOT one continuous shift.
 
 Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo (and T/S etc. as stations when not column headers).
-Convert all times to 24-hour format (HH:MM). Omit days with no shift for this employee.`;
+Convert all times to 24-hour format (HH:MM). Omit days with no shift for this employee.
+
+Before final output, run a strict self-check:
+- Every emitted shift must be traceable to the named employee row and one specific day column in the PDF.
+- No extra shifts, no missing visible shifts for that employee, and no shifts from other employees.
+- Confirm each output time range corresponds to the exact PDF segment for that employee before returning JSON.`;
 
 function normalizeName(name: string): string {
 	return name.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
@@ -412,7 +422,9 @@ Return JSON with this exact structure (strict JSON: double-quoted keys and strin
 }
 
 Notes:
-- If a day has 2 segments for this employee only (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).`;
+- If a day has 2 segments for this employee only (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
+- Accuracy requirement: output only what is explicitly visible for this employee in the PDF. Do not guess unclear values.
+- Final check before responding: ensure the JSON is a strict user-only transcription of the PDF schedule for this employee.`;
 
 	const pdfDataUrl = `data:application/pdf;base64,${pdfBuffer.toString("base64")}`;
 

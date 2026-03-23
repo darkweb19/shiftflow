@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { WeekPicker } from "@/components/week-picker";
 import { StationBadge } from "@/components/station-badge";
 import { SkeletonCard } from "@/components/skeleton-card";
-import type { Shift } from "@/lib/types";
+import type { Shift, ShiftCoworker } from "@/lib/types";
 
 function formatTime12h(time24: string): string {
   const [h, m] = time24.split(":");
@@ -20,6 +20,7 @@ function formatTime12h(time24: string): string {
 export default function SchedulePage() {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [coworkersByShiftId, setCoworkersByShiftId] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<"week" | "day">("day");
 
@@ -48,7 +49,27 @@ export default function SchedulePage() {
       .order("date")
       .order("start_time");
 
-    setShifts((data as Shift[]) ?? []);
+    const fetchedShifts = (data as Shift[]) ?? [];
+    setShifts(fetchedShifts);
+
+    if (fetchedShifts.length > 0) {
+      const shiftIds = fetchedShifts.map((s) => s.id);
+      const { data: coworkerRows } = await supabase
+        .from("shift_coworkers")
+        .select("*")
+        .in("shift_id", shiftIds)
+        .order("coworker_name");
+
+      const map: Record<string, string[]> = {};
+      for (const row of (coworkerRows as ShiftCoworker[]) ?? []) {
+        if (!map[row.shift_id]) map[row.shift_id] = [];
+        map[row.shift_id].push(row.coworker_name);
+      }
+      setCoworkersByShiftId(map);
+    } else {
+      setCoworkersByShiftId({});
+    }
+
     setLoading(false);
   }, [selectedDate, viewMode]);
 
@@ -149,6 +170,11 @@ export default function SchedulePage() {
                             </span>
                           )}
                         </div>
+                        {(coworkersByShiftId[shift.id] ?? []).length > 0 && (
+                          <div className="mt-1 text-xs text-gray-500">
+                            Working with: {coworkersByShiftId[shift.id].join(", ")}
+                          </div>
+                        )}
                       </div>
                       <div className="text-right">
                         <span className="text-sm font-medium text-[#2D3748]">

@@ -8,6 +8,7 @@ export interface ParsedShift {
   end: string;
   role: string | null;
   station: string | null;
+  coworkers?: string[];
 }
 
 export interface ParsedSchedule {
@@ -108,7 +109,8 @@ Return JSON with this exact structure:
       "start": "HH:MM",
       "end": "HH:MM",
       "role": "Kitchen Staff",
-      "station": "Grill"
+      "station": "Grill",
+      "coworkers": ["First Last", "Last, First"]
     }
   ]
 }`,
@@ -127,6 +129,13 @@ Return JSON with this exact structure:
   if (!parsed.shifts || !Array.isArray(parsed.shifts)) {
     throw new Error("Invalid schedule format from Claude");
   }
+
+  parsed.shifts = parsed.shifts.map((shift) => ({
+    ...shift,
+    coworkers: (shift.coworkers ?? [])
+      .map((name) => name.trim())
+      .filter((name) => !!name && normalizeName(name) !== normalizeName(employeeName)),
+  }));
 
   return parsed;
 }

@@ -9,7 +9,7 @@ import {
 } from "../services/gmail.service";
 import { hashPdf, checkDuplicate, uploadPdfToStorage, createPdfRecord, updatePdfStatus } from "../services/pdf.service";
 import { processSchedulePdf } from "../services/parser.service";
-import { upsertShifts } from "../services/shift.service";
+import { saveShiftCoworkers, upsertShifts } from "../services/shift.service";
 
 export const webhookRoutes = Router();
 
@@ -75,6 +75,7 @@ async function processWebhookNotification(payload: {
       const schedule = await processSchedulePdf(pdfAttachment.buffer, user.name);
 
       await upsertShifts(user.id, schedule, pdfRecord.id);
+      await saveShiftCoworkers(user.id, schedule, pdfRecord.id);
       await updatePdfStatus(pdfRecord.id, "completed", {
         week_start: schedule.weekStart,
         week_end: schedule.weekEnd,

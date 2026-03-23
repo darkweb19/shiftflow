@@ -11,6 +11,14 @@ export interface Shift {
   created_at: string;
 }
 
+export interface ShiftCoworker {
+  id: string;
+  user_id: string;
+  shift_id: string;
+  coworker_name: string;
+  created_at: string;
+}
+
 export interface Profile {
   id: string;
   name: string;

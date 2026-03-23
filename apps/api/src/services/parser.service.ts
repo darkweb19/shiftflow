@@ -140,7 +140,11 @@ Split shifts:
 - A split shift with a gap is NOT one continuous shift.
 
 Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo (and T/S etc. as stations when not column headers).
-Convert all times to 24-hour format (HH:MM). Omit days with no shift for this employee.
+Timezone rules:
+- Treat all shift times as local workplace time in America/Toronto.
+- Do not convert times to UTC or any other timezone.
+- Convert to 24-hour format as printed in the schedule context (HH:MM), still in Toronto local time.
+Omit days with no shift for this employee.
 
 Before final output, run a strict self-check:
 - Every emitted shift must be traceable to the named employee row and one specific day column in the PDF.
@@ -423,6 +427,7 @@ Return JSON with this exact structure (strict JSON: double-quoted keys and strin
 
 Notes:
 - If a day has 2 segments for this employee only (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
+- Timezone: all returned shift times must be in America/Toronto local time (no timezone conversion).
 - Accuracy requirement: output only what is explicitly visible for this employee in the PDF. Do not guess unclear values.
 - Final check before responding: ensure the JSON is a strict user-only transcription of the PDF schedule for this employee.`;
 

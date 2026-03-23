@@ -1,4 +1,19 @@
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
 import { z } from "zod";
+
+const envCandidates = [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(__dirname, "../../../.env"),
+  path.resolve(__dirname, "../.env"),
+];
+
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, override: false });
+  }
+}
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(3001),

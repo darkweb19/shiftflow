@@ -22,10 +22,51 @@ const SYSTEM_PROMPT = `You are a work schedule parser. You receive raw text extr
 - Each cell contains shift times (e.g., "3:00p-11:45p") and possibly role/station codes
 
 Extract ONLY the shifts for the specified employee. Return valid JSON only, no markdown fences.
+When matching the employee row, treat all provided name variants as the SAME person.
+Name matching rules:
+- Ignore case differences
+- Ignore commas, periods, and extra spaces
+- Consider "First Last" and "Last, First" equivalent
+- Use the closest exact row match to the provided variants
 
 Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo.
 Convert all times to 24-hour format (HH:MM). Omit days with no shift.
 If you cannot determine the exact dates, use the current week's dates starting from Monday.`;
+
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildNameVariants(employeeName: string): string[] {
+  const normalized = normalizeName(employeeName);
+  const parts = normalized.split(" ").filter(Boolean);
+  const variants = new Set<string>();
+
+  variants.add(employeeName.trim());
+  variants.add(normalized);
+
+  if (parts.length >= 2) {
+    const first = parts[0];
+    const last = parts[parts.length - 1];
+    const middle = parts.slice(1, -1).join(" ");
+
+    const firstLast = [first, middle, last].filter(Boolean).join(" ");
+    const lastFirst = [last, first, middle].filter(Boolean).join(" ");
+    const lastCommaFirst = [last, `${first}${middle ? ` ${middle}` : ""}`]
+      .join(", ")
+      .trim();
+
+    variants.add(firstLast);
+    variants.add(lastFirst);
+    variants.add(lastCommaFirst);
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
 
 export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   const result = await pdfParse(buffer);
@@ -37,6 +78,7 @@ export async function extractShiftsWithAI(
   employeeName: string
 ): Promise<ParsedSchedule> {
   const client = getAnthropicClient();
+  const nameVariants = buildNameVariants(employeeName);
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-20250514",
@@ -45,7 +87,10 @@ export async function extractShiftsWithAI(
     messages: [
       {
         role: "user",
-        content: `Employee name: "${employeeName}"
+        content: `Employee canonical name: "${employeeName}"
+Employee name variants (all represent the same person): ${nameVariants
+          .map((n) => `"${n}"`)
+          .join(", ")}
 
 Raw schedule text:
 ---

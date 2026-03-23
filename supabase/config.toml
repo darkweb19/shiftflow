@@ -1,5 +1,4 @@
-[project]
-id = "shiftflow"
+project_id = "shiftflow"
 
 [api]
 port = 54321

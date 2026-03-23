@@ -29,6 +29,11 @@ Name matching rules:
 - Ignore commas, periods, and extra spaces
 - Consider "First Last" and "Last, First" equivalent
 - Use the closest exact row match to the provided variants
+- IMPORTANT: if a single day cell has multiple segments (for example "T 8:00a-1:00p" and "S 3:00p-6:00p"),
+  output EACH segment as a separate shift object for that same date.
+- A split shift with a gap (e.g. 8:00a-1:00p and 3:00p-6:00p) is NOT one continuous shift.
+- Infer station from the segment code when present (examples: G=Grill, B=Board, $=Cashier, P=Prep, T, S).
+- For each returned shift segment, include coworkers who overlap in time on that date.
 
 Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo.
 Convert all times to 24-hour format (HH:MM). Omit days with no shift.
@@ -67,6 +72,57 @@ function buildNameVariants(employeeName: string): string[] {
   }
 
   return Array.from(variants).filter(Boolean);
+}
+
+function expandMultiSegmentShifts(shifts: ParsedShift[]): ParsedShift[] {
+  const expanded: ParsedShift[] = [];
+
+  for (const shift of shifts) {
+    // Fast path for structured multi-part output like "08:00|15:00" + "13:00|18:00".
+    const startParts = shift.start.split(/\s*[|,/;]\s*/).filter(Boolean);
+    const endParts = shift.end.split(/\s*[|,/;]\s*/).filter(Boolean);
+
+    if (startParts.length > 1 && startParts.length === endParts.length) {
+      for (let i = 0; i < startParts.length; i++) {
+        expanded.push({
+          ...shift,
+          start: startParts[i],
+          end: endParts[i],
+        });
+      }
+      continue;
+    }
+
+    // Fallback for less structured responses where multiple ranges are packed into
+    // start/end fields (or one side) as text like:
+    // "T 8:00a - 1:00p S 3:00p - 6:00p" or "08:00-13:00 and 15:00-18:00".
+    const combinedText = `${shift.start} ${shift.end}`;
+    const pairRegex =
+      /(\d{1,2}:\d{2}\s*[ap]m|\d{1,2}:\d{2})\s*(?:-|–|—|to)\s*(\d{1,2}:\d{2}\s*[ap]m|\d{1,2}:\d{2})/gi;
+    const extractedPairs: Array<{ start: string; end: string }> = [];
+    let match: RegExpExecArray | null;
+    while ((match = pairRegex.exec(combinedText)) !== null) {
+      extractedPairs.push({
+        start: match[1].trim(),
+        end: match[2].trim(),
+      });
+    }
+
+    if (extractedPairs.length > 1) {
+      for (const pair of extractedPairs) {
+        expanded.push({
+          ...shift,
+          start: pair.start,
+          end: pair.end,
+        });
+      }
+      continue;
+    }
+
+    expanded.push(shift);
+  }
+
+  return expanded;
 }
 
 export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
@@ -113,7 +169,11 @@ Return JSON with this exact structure:
       "coworkers": ["First Last", "Last, First"]
     }
   ]
-}`,
+}
+
+Notes:
+- If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects.
+- coworkers must be for the SAME date and overlapping time window of that shift segment.`,
       },
     ],
   });
@@ -130,12 +190,23 @@ Return JSON with this exact structure:
     throw new Error("Invalid schedule format from Claude");
   }
 
-  parsed.shifts = parsed.shifts.map((shift) => ({
-    ...shift,
-    coworkers: (shift.coworkers ?? [])
+  parsed.shifts = expandMultiSegmentShifts(parsed.shifts).map((shift) => {
+    const seen = new Set<string>();
+    const coworkers = (shift.coworkers ?? [])
       .map((name) => name.trim())
-      .filter((name) => !!name && normalizeName(name) !== normalizeName(employeeName)),
-  }));
+      .filter((name) => !!name && normalizeName(name) !== normalizeName(employeeName))
+      .filter((name) => {
+        const key = normalizeName(name);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+    return {
+      ...shift,
+      coworkers,
+    };
+  });
 
   return parsed;
 }

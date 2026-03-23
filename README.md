@@ -139,9 +139,12 @@ shiftflow/
 ## How It Works
 
 1. User signs up and sets their **employer email** (the address that sends schedule PDFs)
-2. User clicks **Connect Gmail** → OAuth2 consent → backend stores tokens + sets up Gmail watch
-3. When employer sends a new schedule email, Gmail notifies the backend via Pub/Sub webhook
-4. Backend downloads the PDF, hashes it for dedup, uploads to Supabase Storage
-5. `pdf-parse` extracts raw text → Claude AI extracts structured shift data for the user
-6. Shifts are upserted into the database
-7. Frontend displays them on the dashboard and schedule pages
+2. **Optional — Gmail:** User clicks **Connect Gmail** → OAuth2 consent → backend stores tokens + sets up Gmail watch
+3. **Optional — Manual:** User uploads a schedule PDF from **Settings** → `POST /schedule/upload` with Supabase JWT (same pipeline as email: storage, parse, shifts)
+4. When employer sends a new schedule email, Gmail notifies the backend via Pub/Sub webhook (if connected)
+5. Backend downloads/uploads the PDF, hashes it for dedup, stores in Supabase Storage
+6. `pdf-parse` extracts raw text → Claude AI extracts structured shift data for the user
+7. Shifts are upserted into the database
+8. Frontend displays them on the dashboard and schedule pages
+
+> **Logs:** `Warning: TT: undefined function: 21` comes from the PDF font library and is usually harmless.

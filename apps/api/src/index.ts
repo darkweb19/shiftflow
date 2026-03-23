@@ -4,6 +4,7 @@ import { getEnv } from "./config";
 import { gmailRoutes } from "./routes/gmail.routes";
 import { webhookRoutes } from "./routes/webhook.routes";
 import { syncRoutes } from "./routes/sync.routes";
+import { scheduleRoutes } from "./routes/schedule.routes";
 import { startWatchRenewalCron } from "./cron/renew-watch";
 
 const app = express();
@@ -20,6 +21,7 @@ app.get("/health", (_req, res) => {
 app.use("/gmail", gmailRoutes);
 app.use("/gmail", webhookRoutes);
 app.use("/sync", syncRoutes);
+app.use("/schedule", scheduleRoutes);
 
 startWatchRenewalCron();
 

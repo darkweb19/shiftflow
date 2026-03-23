@@ -72,16 +72,24 @@ async function processWebhookNotification(payload: {
       );
 
       const pdfRecord = await createPdfRecord(user.id, filePath, pdfAttachment.name, hash);
-      const schedule = await processSchedulePdf(pdfAttachment.buffer, user.name);
 
-      await upsertShifts(user.id, schedule, pdfRecord.id);
-      await saveShiftCoworkers(user.id, schedule, pdfRecord.id);
-      await updatePdfStatus(pdfRecord.id, "completed", {
-        week_start: schedule.weekStart,
-        week_end: schedule.weekEnd,
-      });
+      try {
+        const schedule = await processSchedulePdf(pdfAttachment.buffer, user.name);
 
-      console.log(`Processed schedule PDF for user ${user.id}: ${schedule.shifts.length} shifts`);
+        await upsertShifts(user.id, schedule, pdfRecord.id);
+        await saveShiftCoworkers(user.id, schedule, pdfRecord.id);
+        await updatePdfStatus(pdfRecord.id, "completed", {
+          week_start: schedule.weekStart,
+          week_end: schedule.weekEnd,
+        });
+
+        console.log(`Processed schedule PDF for user ${user.id}: ${schedule.shifts.length} shifts`);
+      } catch (pipelineErr) {
+        console.error(`PDF pipeline failed for message ${msgRef.id}:`, pipelineErr);
+        await updatePdfStatus(pdfRecord.id, "failed", {
+          error_msg: String(pipelineErr),
+        });
+      }
     } catch (msgErr) {
       console.error(`Error processing message ${msgRef.id}:`, msgErr);
     }

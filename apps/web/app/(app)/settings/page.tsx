@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { User, Mail, CheckCircle2, XCircle, LogOut } from "lucide-react";
+import { User, Mail, CheckCircle2, XCircle, LogOut, Upload } from "lucide-react";
 import type { Profile } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -26,6 +26,11 @@ function SettingsContent() {
   const [employerEmail, setEmployerEmail] = useState("");
   const [saving, setSaving] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<{
+    type: "ok" | "err";
+    text: string;
+  } | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -75,6 +80,56 @@ function SettingsContent() {
   const connectGmail = () => {
     if (!userId) return;
     window.location.href = `${API_URL}/gmail/connect?userId=${userId}`;
+  };
+
+  const uploadSchedulePdf = async (file: File | null) => {
+    if (!file) return;
+    setUploadMessage(null);
+    setUploadingPdf(true);
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setUploadMessage({ type: "err", text: "Sign in again to upload." });
+        return;
+      }
+      const fd = new FormData();
+      fd.append("pdf", file);
+      const res = await fetch(`${API_URL}/schedule/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: fd,
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        shiftsCount?: number;
+        code?: string;
+      };
+      if (!res.ok) {
+        if (res.status === 409 && body.code === "duplicate") {
+          setUploadMessage({
+            type: "err",
+            text: "This PDF was already imported. Use a new file or remove the old row in pdfs.",
+          });
+        } else {
+          setUploadMessage({
+            type: "err",
+            text: body.error ?? `Upload failed (${res.status})`,
+          });
+        }
+        return;
+      }
+      setUploadMessage({
+        type: "ok",
+        text: `Imported ${body.shiftsCount ?? 0} shift(s). Open Schedule to view.`,
+      });
+    } catch {
+      setUploadMessage({ type: "err", text: "Network error — try again." });
+    } finally {
+      setUploadingPdf(false);
+    }
   };
 
   const disconnectGmail = async () => {
@@ -163,6 +218,47 @@ function SettingsContent() {
                 {saving ? "..." : "Save"}
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Manual PDF upload */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Upload className="h-4 w-4" />
+              Import schedule (PDF)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Upload the same weekly schedule PDF you get by email. Shifts appear on your
+              dashboard and schedule. Gmail sync below is optional for automatic imports.
+            </p>
+            <Input
+              type="file"
+              accept="application/pdf,.pdf"
+              disabled={uploadingPdf}
+              className="cursor-pointer text-sm"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                void uploadSchedulePdf(f ?? null);
+                e.target.value = "";
+              }}
+            />
+            {uploadingPdf ? (
+              <p className="text-xs text-muted-foreground">Processing PDF…</p>
+            ) : null}
+            {uploadMessage ? (
+              <div
+                className={`rounded-lg p-3 text-sm ${
+                  uploadMessage.type === "ok"
+                    ? "bg-green-50 text-green-800"
+                    : "bg-red-50 text-red-700"
+                }`}
+              >
+                {uploadMessage.text}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

@@ -2,15 +2,6 @@ import pdfParse from "pdf-parse";
 import { getEnv } from "../config";
 import { getOpenAIClient } from "../lib/openai";
 
-/** Coworker row for the same day column as the employee shift (their times + station from PDF). */
-export interface ParsedCoworkerShift {
-	name: string;
-	start: string;
-	end: string;
-	station: string | null;
-	role: string | null;
-}
-
 export interface ParsedShift {
 	date: string;
 	day: string;
@@ -18,7 +9,6 @@ export interface ParsedShift {
 	end: string;
 	role: string | null;
 	station: string | null;
-	coworkers?: Array<ParsedCoworkerShift | string>;
 }
 
 export interface ParsedSchedule {
@@ -115,13 +105,15 @@ function parseModelJsonToSchedule(text: string): ParsedSchedule {
 	throw new Error(`Failed to parse AI schedule JSON: ${hint}`);
 }
 
-const SYSTEM_PROMPT = `You are a work schedule parser. You receive the actual weekly work schedule as a PDF document (e.g. Chipotle-style). Read the PDF visually — tables, headers, and cell layout — as the source of truth. The schedule is a table where:
+const SYSTEM_PROMPT = `You are a work schedule parser for ONE employee only. You receive a weekly work schedule PDF (e.g. Chipotle-style). Read the PDF visually — tables, headers, and cell layout — as the source of truth. The schedule is a table where:
 - Columns are ONE day each: read the printed column headers (Mon, Tue, … or dates) left-to-right. The leftmost schedule column is day 1, the next column is the next calendar day, etc.
 - Rows represent different employees
 - Each cell contains shift times (e.g., "3:00p-11:45p") and often a station code letter BEFORE the time
 
-Extract ONLY the shifts for the specified employee. Return valid JSON only, no markdown fences.
-When matching the employee row, treat all provided name variants as the SAME person.
+Extract ONLY the shifts for the single named employee in the user message. Do not include any other person’s shifts, names, or a "coworkers" list — ignore everyone else on the schedule entirely.
+Return valid JSON only, no markdown fences.
+
+When matching that employee’s row, treat all provided name variants as the SAME person.
 Name matching rules:
 - Ignore case differences
 - Ignore commas, periods, and extra spaces
@@ -142,41 +134,11 @@ Split shifts:
 - If a single day cell has multiple segments (e.g. "T 8:00a-1:00p" and "S 3:00p-6:00p" where T and S are stations), output EACH segment as a separate shift for that SAME column date.
 - A split shift with a gap is NOT one continuous shift.
 
-Coworkers: For each employee shift segment, list EVERY other worker scheduled that same calendar day column with their own shift details (even if times match exactly). For each coworker include: name, their start/end in 24-hour HH:MM, station (Grill, Board, Cashier, etc.), and role/job title if visible. Read their row in the PDF for that day column.
-
 Role code mapping: P=Prep, G=Grill, $=Cashier, B=Board/Expo (and T/S etc. as stations when not column headers).
-Convert all times to 24-hour format (HH:MM). Omit days with no shift.`;
+Convert all times to 24-hour format (HH:MM). Omit days with no shift for this employee.`;
 
 function normalizeName(name: string): string {
 	return name.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function normalizeCoworkerEntry(
-	raw: unknown,
-	employeeName: string,
-): ParsedCoworkerShift | null {
-	if (typeof raw === "string") {
-		const name = raw.trim();
-		if (!name || normalizeName(name) === normalizeName(employeeName))
-			return null;
-		return { name, start: "", end: "", station: null, role: null };
-	}
-	if (raw && typeof raw === "object") {
-		const o = raw as Record<string, unknown>;
-		const name = String(o.name ?? o.coworker_name ?? "").trim();
-		if (!name || normalizeName(name) === normalizeName(employeeName))
-			return null;
-		const start = String(o.start ?? o.start_time ?? "").trim();
-		const end = String(o.end ?? o.end_time ?? "").trim();
-		const station =
-			o.station != null && o.station !== ""
-				? String(o.station).trim()
-				: null;
-		const role =
-			o.role != null && o.role !== "" ? String(o.role).trim() : null;
-		return { name, start, end, station, role };
-	}
-	return null;
 }
 
 function buildNameVariants(employeeName: string): string[] {
@@ -433,7 +395,7 @@ Employee name variants (all represent the same person): ${nameVariants
 		.join(", ")}
 ${anchorInstructions}
 
-Return JSON with this exact structure (strict JSON: double-quoted keys and strings only, no trailing commas, no comments):
+Return JSON with this exact structure (strict JSON: double-quoted keys and strings only, no trailing commas, no comments). Do not add "coworkers" or any extra keys:
 {
   "weekStart": "YYYY-MM-DD",
   "weekEnd": "YYYY-MM-DD",
@@ -444,23 +406,13 @@ Return JSON with this exact structure (strict JSON: double-quoted keys and strin
       "start": "HH:MM",
       "end": "HH:MM",
       "role": "Kitchen Staff",
-      "station": "Grill",
-      "coworkers": [
-        {
-          "name": "First Last",
-          "start": "10:00",
-          "end": "22:30",
-          "station": "Board",
-          "role": "Kitchen Staff"
-        }
-      ]
+      "station": "Grill"
     }
   ]
 }
 
 Notes:
-- If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
-- coworkers: array of objects (not plain strings). List all other workers in that same day column with their own start, end, station, and role from the PDF. Include everyone scheduled that day even if times are identical.`;
+- If a day has 2 segments for this employee only (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).`;
 
 	const pdfDataUrl = `data:application/pdf;base64,${pdfBuffer.toString("base64")}`;
 
@@ -503,25 +455,7 @@ Notes:
 		throw new Error("Invalid schedule format from OpenAI");
 	}
 
-	let shifts: ParsedShift[] = expandMultiSegmentShifts(parsed.shifts).map(
-		(shift) => {
-			const seen = new Set<string>();
-			const coworkers: ParsedCoworkerShift[] = [];
-			for (const raw of shift.coworkers ?? []) {
-				const c = normalizeCoworkerEntry(raw, employeeName);
-				if (!c) continue;
-				const key = normalizeName(c.name);
-				if (seen.has(key)) continue;
-				seen.add(key);
-				coworkers.push(c);
-			}
-
-			return {
-				...shift,
-				coworkers,
-			};
-		},
-	);
+	let shifts: ParsedShift[] = expandMultiSegmentShifts(parsed.shifts);
 
 	if (anchor) {
 		shifts = realignShiftDatesToFirstColumn(shifts, anchor.firstColumnIso);

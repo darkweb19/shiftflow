@@ -23,7 +23,8 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   GOOGLE_PUBSUB_TOPIC: z.string().min(1),
   GOOGLE_PUBSUB_VERIFY_TOKEN: z.string().min(1),
-  ANTHROPIC_API_KEY: z.string().min(1),
+  OPENAI_API_KEY: z.string().min(1),
+  OPENAI_MODEL: z.string().min(1).default("gpt-4o"),
   FRONTEND_URL: z.string().url(),
 });
 

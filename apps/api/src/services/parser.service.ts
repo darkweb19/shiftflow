@@ -1,5 +1,6 @@
 import pdfParse from "pdf-parse";
-import { getAnthropicClient } from "../lib/anthropic";
+import { getEnv } from "../config";
+import { getOpenAIClient } from "../lib/openai";
 
 /** Coworker row for the same day column as the employee shift (their times + station from PDF). */
 export interface ParsedCoworkerShift {
@@ -393,8 +394,8 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
 	return result.text;
 }
 
-/** Anthropic PDF input limit is ~32MB; stay under with base64 overhead. */
-const MAX_PDF_BYTES = 28 * 1024 * 1024;
+/** OpenAI file input limit is 50MB per file; stay under with base64 data-URL overhead. */
+const MAX_PDF_BYTES = 45 * 1024 * 1024;
 
 async function extractShiftsWithAI(
 	pdfBuffer: Buffer,
@@ -403,11 +404,12 @@ async function extractShiftsWithAI(
 ): Promise<ParsedSchedule> {
 	if (pdfBuffer.length > MAX_PDF_BYTES) {
 		throw new Error(
-			`PDF is too large (${Math.round(pdfBuffer.length / 1024 / 1024)}MB). Max ~28MB.`,
+			`PDF is too large (${Math.round(pdfBuffer.length / 1024 / 1024)}MB). Max ~45MB.`,
 		);
 	}
 
-	const client = getAnthropicClient();
+	const client = getOpenAIClient();
+	const { OPENAI_MODEL } = getEnv();
 	const nameVariants = buildNameVariants(employeeName);
 	const anchor = extractScheduleAnchorFromRawText(textForAnchorHints);
 
@@ -460,28 +462,23 @@ Notes:
 - If a day has 2 segments for the employee (ex: "T 8:00a-1:00p" and "S 3:00p-6:00p"), return TWO shift objects (T and S are stations, not weekdays).
 - coworkers: array of objects (not plain strings). List all other workers in that same day column with their own start, end, station, and role from the PDF. Include everyone scheduled that day even if times are identical.`;
 
-	const pdfBase64 = pdfBuffer.toString("base64");
+	const pdfDataUrl = `data:application/pdf;base64,${pdfBuffer.toString("base64")}`;
 
-	const message = await client.beta.messages.create({
-		model: "claude-sonnet-4-20250514",
-		max_tokens: 20000,
-		betas: ["pdfs-2024-09-25"],
-		system: SYSTEM_PROMPT,
-		messages: [
+	const response = await client.responses.create({
+		model: OPENAI_MODEL,
+		instructions: SYSTEM_PROMPT,
+		max_output_tokens: 20000,
+		input: [
 			{
 				role: "user",
 				content: [
 					{
-						type: "document",
-						source: {
-							type: "base64",
-							media_type: "application/pdf",
-							data: pdfBase64,
-						},
-						title: "weekly-schedule.pdf",
+						type: "input_file",
+						filename: "weekly-schedule.pdf",
+						file_data: pdfDataUrl,
 					},
 					{
-						type: "text",
+						type: "input_text",
 						text: userText,
 					},
 				],
@@ -489,15 +486,21 @@ Notes:
 		],
 	});
 
-	const textBlock = message.content.find((b) => b.type === "text");
-	if (!textBlock || textBlock.type !== "text") {
-		throw new Error("No text response from Claude");
+	if (response.error) {
+		throw new Error(
+			`OpenAI response error: ${response.error.message ?? JSON.stringify(response.error)}`,
+		);
 	}
 
-	const parsed = parseModelJsonToSchedule(textBlock.text);
+	const outputText = response.output_text?.trim();
+	if (!outputText) {
+		throw new Error("No text response from OpenAI");
+	}
+
+	const parsed = parseModelJsonToSchedule(outputText);
 
 	if (!parsed.shifts || !Array.isArray(parsed.shifts)) {
-		throw new Error("Invalid schedule format from Claude");
+		throw new Error("Invalid schedule format from OpenAI");
 	}
 
 	let shifts: ParsedShift[] = expandMultiSegmentShifts(parsed.shifts).map(

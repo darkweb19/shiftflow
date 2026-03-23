@@ -464,7 +464,7 @@ Notes:
 
 	const message = await client.beta.messages.create({
 		model: "claude-sonnet-4-20250514",
-		max_tokens: 10000,
+		max_tokens: 20000,
 		betas: ["pdfs-2024-09-25"],
 		system: SYSTEM_PROMPT,
 		messages: [

@@ -51,7 +51,7 @@ async function handleScheduleUpload(req: Request, res: Response) {
     }
 
     const filePath = await uploadPdfToStorage(user.id, hash, buffer, fileName);
-    const pdfRecord = await createPdfRecord(user.id, filePath, fileName, hash);
+    const pdfRecord = await createPdfRecord(user.id, filePath, fileName, hash, "manual");
 
     try {
       const schedule = await processSchedulePdf(buffer, user.name);

@@ -65,7 +65,13 @@ syncRoutes.post("/trigger", async (req: Request, res: Response) => {
       if (isDuplicate) continue;
 
       const filePath = await uploadPdfToStorage(user.id, hash, pdfAttachment.buffer, pdfAttachment.name);
-      const pdfRecord = await createPdfRecord(user.id, filePath, pdfAttachment.name, hash);
+      const pdfRecord = await createPdfRecord(
+        user.id,
+        filePath,
+        pdfAttachment.name,
+        hash,
+        "sync"
+      );
 
       try {
         const schedule = await processSchedulePdf(pdfAttachment.buffer, user.name);

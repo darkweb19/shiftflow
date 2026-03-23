@@ -35,6 +35,16 @@ export function formatShiftStoredDate(ymd: string): string {
   return formatInTimeZone(noonUtc, WORKPLACE_TZ, "EEE, MMM d");
 }
 
+/** Split day header for stacked layout (e.g. THU + Mar 26). */
+export function formatDayHeaderParts(ymd: string): { dow: string; monthDay: string } {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const noonUtc = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return {
+    dow: formatInTimeZone(noonUtc, WORKPLACE_TZ, "EEE").toUpperCase(),
+    monthDay: formatInTimeZone(noonUtc, WORKPLACE_TZ, "MMM d"),
+  };
+}
+
 export function isSameWorkplaceCalendarDay(a: Date, b: Date): boolean {
   return getWorkplaceYmd(a) === getWorkplaceYmd(b);
 }

@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import { getSupabaseAdmin } from "../lib/supabase";
 
+/** gmail = Pub/Sub webhook; manual = Settings upload; sync = POST /sync/trigger */
+export type PdfImportSource = "gmail" | "manual" | "sync";
+
 export function hashPdf(buffer: Buffer): string {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
@@ -44,7 +47,8 @@ export async function createPdfRecord(
   userId: string,
   filePath: string,
   fileName: string,
-  hash: string
+  hash: string,
+  importSource: PdfImportSource = "gmail"
 ) {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
@@ -55,6 +59,7 @@ export async function createPdfRecord(
       file_name: fileName,
       hash,
       status: "processing",
+      import_source: importSource,
     })
     .select()
     .single();

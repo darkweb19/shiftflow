@@ -35,6 +35,8 @@ export interface Profile {
   updated_at: string;
 }
 
+export type PdfImportSource = "gmail" | "manual" | "sync";
+
 export interface Pdf {
   id: string;
   user_id: string;
@@ -46,4 +48,6 @@ export interface Pdf {
   status: "pending" | "processing" | "completed" | "failed";
   error_msg: string | null;
   uploaded_at: string;
+  /** gmail = email webhook; manual = Settings; sync = /sync/trigger */
+  import_source?: PdfImportSource;
 }

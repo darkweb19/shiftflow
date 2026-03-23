@@ -71,7 +71,13 @@ async function processWebhookNotification(payload: {
         pdfAttachment.name
       );
 
-      const pdfRecord = await createPdfRecord(user.id, filePath, pdfAttachment.name, hash);
+      const pdfRecord = await createPdfRecord(
+        user.id,
+        filePath,
+        pdfAttachment.name,
+        hash,
+        "gmail"
+      );
 
       try {
         const schedule = await processSchedulePdf(pdfAttachment.buffer, user.name);

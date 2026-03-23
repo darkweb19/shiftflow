@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { User } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { WeekPicker } from "@/components/week-picker";
 import { StationBadge } from "@/components/station-badge";
 import { SkeletonCard } from "@/components/skeleton-card";
+import { cn } from "@/lib/utils";
 import type { Shift, ShiftCoworker } from "@/lib/types";
 import {
+  formatDayHeaderParts,
   formatInstantInWorkplace,
-  formatShiftStoredDate,
   getWorkplaceWeekRange,
   getWorkplaceYmd,
 } from "@/lib/workplace-time";
@@ -20,7 +21,7 @@ function formatTime12h(time24: string): string {
   const m = (parts[1] ?? "00").slice(0, 2);
   const hour = parseInt(h, 10);
   if (Number.isNaN(hour)) return time24;
-  const ampm = hour >= 12 ? "PM" : "AM";
+  const ampm = hour >= 12 ? "pm" : "am";
   const hour12 = hour % 12 || 12;
   return `${hour12}:${m.padStart(2, "0")}${ampm}`;
 }
@@ -110,12 +111,22 @@ export default function SchedulePage() {
     fetchShifts();
   }, [fetchShifts]);
 
-  const grouped = shifts.reduce<Record<string, Shift[]>>((acc, shift) => {
-    const role = shift.role ?? "Shift";
-    if (!acc[role]) acc[role] = [];
-    acc[role].push(shift);
-    return acc;
-  }, {});
+  /** Group by calendar day so split shifts (same cell / multiple rows) stack under one date. */
+  const shiftsByDate = useMemo(() => {
+    const map = new Map<string, Shift[]>();
+    for (const s of shifts) {
+      const list = map.get(s.date) ?? [];
+      list.push(s);
+      map.set(s.date, list);
+    }
+    const dates = [...map.keys()].sort();
+    return dates.map((date) => ({
+      date,
+      dayShifts: (map.get(date) ?? []).sort((a, b) =>
+        a.start_time.localeCompare(b.start_time)
+      ),
+    }));
+  }, [shifts]);
 
   return (
     <div className="flex flex-col">
@@ -171,109 +182,111 @@ export default function SchedulePage() {
             <SkeletonCard />
             <SkeletonCard />
           </div>
-        ) : Object.keys(grouped).length === 0 ? (
+        ) : shiftsByDate.length === 0 ? (
           <div className="rounded-xl bg-gray-100 px-4 py-10 text-center text-sm text-gray-400">
             No shifts for this {viewMode === "day" ? "day" : "week"}. Try the
             <strong className="text-gray-500"> week arrows </strong>
             if your PDF is for a different week.
           </div>
         ) : (
-          <div className="space-y-6">
-            {Object.entries(grouped).map(([role, roleShifts]) => (
-              <section key={role}>
-                <div className="mb-3 flex items-center gap-2">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#FFF5F0]">
-                    <span className="text-sm">📋</span>
-                  </div>
-                  <h3 className="text-sm font-semibold text-[#2D3748]">{role}</h3>
-                </div>
+          <div className="space-y-5">
+            <div className="mb-2 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#FFF5F0]">
+                <span className="text-sm">📋</span>
+              </div>
+              <h2 className="text-sm font-semibold text-[#2D3748]">Your shifts</h2>
+            </div>
 
-                <div className="space-y-4">
-                  {roleShifts.map((shift) => {
-                    const coworkers = coworkersByShiftId[shift.id] ?? [];
-                    return (
-                      <div key={shift.id} className="space-y-2">
-                        {/* Your shift — highlighted (reference UI) */}
-                        <div className="rounded-xl border-2 border-amber-200/90 bg-[#FFF8E1] px-3 py-3 shadow-sm">
-                          {myDisplayName ? (
-                            <div className="mb-2 text-sm font-semibold text-[#3B6FB6]">
-                              {myDisplayName}
-                            </div>
-                          ) : null}
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <div className="text-sm font-medium text-[#2D3748]">
-                                {formatShiftStoredDate(shift.date)}
-                              </div>
-                              <div className="mt-1 flex flex-wrap items-center gap-2">
-                                <StationBadge station={shift.station} />
-                                {shift.notes ? (
-                                  <span className="text-xs text-gray-500">{shift.notes}</span>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className="shrink-0 text-right">
-                              <span className="text-sm font-semibold text-[#2D3748]">
-                                {formatTime12h(shift.start_time)}
-                              </span>
-                              <span className="mx-1 text-gray-300">—</span>
-                              <span className="text-sm font-semibold text-[#2D3748]">
-                                {formatTime12h(shift.end_time)}
-                              </span>
-                            </div>
-                          </div>
+            {shiftsByDate.map(({ date, dayShifts }) => {
+              const { dow, monthDay } = formatDayHeaderParts(date);
+              return (
+                <section key={date} className="space-y-2">
+                  <div className="overflow-hidden rounded-xl border-2 border-amber-200/90 bg-[#FFF8E1] shadow-sm">
+                    <div className="border-b border-amber-200/60 bg-amber-100/50 px-3 py-2.5">
+                      {myDisplayName ? (
+                        <div className="mb-1.5 text-sm font-semibold text-[#3B6FB6]">
+                          {myDisplayName}
                         </div>
+                      ) : null}
+                      <div className="text-xs font-bold uppercase tracking-[0.12em] text-[#3B6FB6]">
+                        {dow}
+                      </div>
+                      <div className="text-base font-semibold text-[#2D3748]">{monthDay}</div>
+                    </div>
 
-                        {/* One block per coworker (not inline comma text) */}
-                        {coworkers.length > 0 ? (
-                          <div className="space-y-2 pl-0.5">
-                            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
-                              Coworkers
+                    {dayShifts.map((shift, segIdx) => {
+                      const coworkers = coworkersByShiftId[shift.id] ?? [];
+                      return (
+                        <div
+                          key={shift.id}
+                          className={cn(
+                            "space-y-2 px-3 py-3",
+                            segIdx > 0 && "border-t border-amber-200/50"
+                          )}
+                        >
+                          <div>
+                            <p className="text-sm font-semibold text-[#D35649]">
+                              {shift.role ?? "Shift"}
                             </p>
-                            {coworkers.map((c) => {
-                              const hasTimes = !!(c.start_time && c.end_time);
-                              return (
-                                <div
-                                  key={c.id}
-                                  className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm"
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <p className="text-sm font-medium text-[#3B6FB6]">
-                                      {c.coworker_name}
-                                    </p>
-                                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                                      <StationBadge station={c.station} />
-                                      {c.role ? (
-                                        <span className="text-xs text-gray-500">{c.role}</span>
-                                      ) : null}
+                            <p className="mt-1 text-sm font-medium text-[#2D3748]">
+                              {formatTime12h(shift.start_time)} to{" "}
+                              {formatTime12h(shift.end_time)}
+                            </p>
+                            {shift.station ? (
+                              <div className="mt-2">
+                                <StationBadge station={shift.station} />
+                              </div>
+                            ) : null}
+                            {shift.notes ? (
+                              <p className="mt-1 text-xs text-gray-500">{shift.notes}</p>
+                            ) : null}
+                          </div>
+
+                          {coworkers.length > 0 ? (
+                            <div className="space-y-2 border-t border-amber-200/40 pt-2">
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                                Coworkers
+                              </p>
+                              {coworkers.map((c) => {
+                                const hasTimes = !!(c.start_time && c.end_time);
+                                return (
+                                  <div
+                                    key={c.id}
+                                    className="flex items-center justify-between gap-3 rounded-lg border border-gray-200/80 bg-white/90 px-2.5 py-2 shadow-sm"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-medium text-[#3B6FB6]">
+                                        {c.coworker_name}
+                                      </p>
+                                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                                        <StationBadge station={c.station} />
+                                        {c.role ? (
+                                          <span className="text-xs text-gray-500">{c.role}</span>
+                                        ) : null}
+                                      </div>
                                     </div>
-                                  </div>
-                                  <div className="shrink-0 text-right">
-                                    {hasTimes ? (
-                                      <>
-                                        <span className="text-sm font-semibold text-[#2D3748]">
-                                          {formatTime12h(c.start_time!)}
-                                        </span>
-                                        <span className="mx-1 text-gray-300">—</span>
-                                        <span className="text-sm font-semibold text-[#2D3748]">
+                                    <div className="shrink-0 text-right">
+                                      {hasTimes ? (
+                                        <span className="text-xs font-medium text-[#2D3748]">
+                                          {formatTime12h(c.start_time!)} to{" "}
                                           {formatTime12h(c.end_time!)}
                                         </span>
-                                      </>
-                                    ) : (
-                                      <span className="text-xs text-gray-400">Time n/a</span>
-                                    )}
+                                      ) : (
+                                        <span className="text-xs text-gray-400">Time n/a</span>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
       </main>

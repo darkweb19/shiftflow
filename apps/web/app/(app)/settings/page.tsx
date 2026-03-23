@@ -1,6 +1,7 @@
 "use client";
 
-import { Suspense, useState, useEffect } from "react";
+import { Suspense, useState, useEffect, useCallback } from "react";
+import { format, parseISO } from "date-fns";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -8,10 +9,56 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { User, Mail, CheckCircle2, XCircle, LogOut, Upload } from "lucide-react";
-import type { Profile } from "@/lib/types";
+import {
+  User,
+  Mail,
+  CheckCircle2,
+  XCircle,
+  LogOut,
+  Upload,
+  Loader2,
+  FileText,
+} from "lucide-react";
+import type { Pdf, PdfImportSource, Profile } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+
+function formatPdfWeekRange(weekStart: string | null, weekEnd: string | null): string {
+  try {
+    if (weekStart && weekEnd) {
+      return `${format(parseISO(weekStart), "EEE, MMM d")} – ${format(parseISO(weekEnd), "EEE, MMM d, yyyy")}`;
+    }
+    if (weekStart) return format(parseISO(weekStart), "MMM d, yyyy");
+  } catch {
+    return "Week unknown";
+  }
+  return "Week pending…";
+}
+
+function importSourceLabel(source?: PdfImportSource): string {
+  switch (source) {
+    case "manual":
+      return "Settings upload";
+    case "sync":
+      return "Gmail (sync)";
+    case "gmail":
+    default:
+      return "Gmail (automatic)";
+  }
+}
+
+function statusStyles(status: Pdf["status"]): string {
+  switch (status) {
+    case "completed":
+      return "bg-emerald-100 text-emerald-800";
+    case "failed":
+      return "bg-red-100 text-red-800";
+    case "processing":
+      return "bg-amber-100 text-amber-900";
+    default:
+      return "bg-gray-100 text-gray-700";
+  }
+}
 
 export default function SettingsPage() {
   return (
@@ -31,6 +78,9 @@ function SettingsContent() {
     type: "ok" | "err";
     text: string;
   } | null>(null);
+  const [pdfImports, setPdfImports] = useState<Pdf[]>([]);
+  const [pdfHistoryLoading, setPdfHistoryLoading] = useState(false);
+  const [pdfHistoryError, setPdfHistoryError] = useState<string | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -60,6 +110,35 @@ function SettingsContent() {
 
     loadProfile();
   }, []);
+
+  const loadPdfHistory = useCallback(async () => {
+    if (!userId) {
+      setPdfHistoryLoading(false);
+      return;
+    }
+    setPdfHistoryLoading(true);
+    setPdfHistoryError(null);
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("pdfs")
+      .select(
+        "id, file_name, week_start, week_end, status, error_msg, uploaded_at, import_source"
+      )
+      .eq("user_id", userId)
+      .order("uploaded_at", { ascending: false })
+      .limit(40);
+    if (error) {
+      setPdfHistoryError(error.message);
+      setPdfImports([]);
+    } else {
+      setPdfImports((data as Pdf[]) ?? []);
+    }
+    setPdfHistoryLoading(false);
+  }, [userId]);
+
+  useEffect(() => {
+    void loadPdfHistory();
+  }, [loadPdfHistory]);
 
   const saveEmployerEmail = async () => {
     if (!userId) return;
@@ -125,6 +204,7 @@ function SettingsContent() {
         type: "ok",
         text: `Imported ${body.shiftsCount ?? 0} shift(s). Open Schedule to view.`,
       });
+      void loadPdfHistory();
     } catch {
       setUploadMessage({ type: "err", text: "Network error — try again." });
     } finally {
@@ -234,11 +314,18 @@ function SettingsContent() {
               Upload the same weekly schedule PDF you get by email. Shifts appear on your
               dashboard and schedule. Gmail sync below is optional for automatic imports.
             </p>
+            <p className="rounded-md border border-amber-100 bg-amber-50/80 px-3 py-2 text-xs text-amber-900/90">
+              <strong className="font-semibold">Heads up:</strong> importing reads your PDF
+              with AI and can take a little while. Typical time is about{" "}
+              <strong>30–90 seconds</strong>; large or busy schedules may take{" "}
+              <strong>up to a few minutes</strong>. Please keep this screen open and be
+              patient — it&apos;s working.
+            </p>
             <Input
               type="file"
               accept="application/pdf,.pdf"
               disabled={uploadingPdf}
-              className="cursor-pointer text-sm"
+              className="cursor-pointer text-sm disabled:opacity-60"
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 void uploadSchedulePdf(f ?? null);
@@ -246,7 +333,30 @@ function SettingsContent() {
               }}
             />
             {uploadingPdf ? (
-              <p className="text-xs text-muted-foreground">Processing PDF…</p>
+              <div
+                className="flex gap-3 rounded-lg border border-[#3B6FB6]/25 bg-[#3B6FB6]/5 p-4"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <Loader2
+                  className="h-6 w-6 shrink-0 animate-spin text-[#3B6FB6]"
+                  aria-hidden
+                />
+                <div className="min-w-0 space-y-1">
+                  <p className="text-sm font-semibold text-[#2D3748]">
+                    Importing your schedule…
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Estimated <strong>30–90 seconds</strong> (sometimes longer for big PDFs).
+                    Don&apos;t close this page.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    We&apos;re uploading the file, reading the PDF, and saving your shifts —
+                    thanks for waiting.
+                  </p>
+                </div>
+              </div>
             ) : null}
             {uploadMessage ? (
               <div
@@ -258,6 +368,87 @@ function SettingsContent() {
               >
                 {uploadMessage.text}
               </div>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        {/* Import history */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Imported schedules
+            </CardTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs text-[#3B6FB6]"
+              onClick={() => void loadPdfHistory()}
+              disabled={pdfHistoryLoading || !userId}
+            >
+              Refresh
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              PDFs processed from <strong>Gmail</strong> or <strong>upload</strong> above.
+              Each row shows the schedule week when parsing finished successfully.
+            </p>
+            {!userId ? (
+              <p className="text-sm text-muted-foreground">Loading account…</p>
+            ) : pdfHistoryError ? (
+              <div className="rounded-lg bg-red-50 p-3 text-xs text-red-700">
+                Could not load history: {pdfHistoryError}
+                {pdfHistoryError.includes("import_source") || pdfHistoryError.includes("column") ? (
+                  <span className="mt-1 block">
+                    Run the latest Supabase migration (adds{" "}
+                    <code className="rounded bg-red-100 px-1">import_source</code>).
+                  </span>
+                ) : null}
+              </div>
+            ) : pdfHistoryLoading && pdfImports.length === 0 ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading…
+              </div>
+            ) : pdfImports.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No PDFs imported yet.</p>
+            ) : null}
+            {userId && pdfImports.length > 0 ? (
+              <ul className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
+                {pdfImports.map((p) => (
+                  <li
+                    key={p.id}
+                    className="rounded-lg border border-gray-100 bg-gray-50/80 px-3 py-2.5 text-sm"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-[#2D3748]" title={p.file_name}>
+                          {p.file_name}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {formatPdfWeekRange(p.week_start, p.week_end)}
+                        </p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {importSourceLabel(p.import_source)} ·{" "}
+                          {format(parseISO(p.uploaded_at), "MMM d, yyyy · h:mm a")}
+                        </p>
+                        {p.status === "failed" && p.error_msg ? (
+                          <p className="mt-1 line-clamp-2 text-[11px] text-red-600">
+                            {p.error_msg}
+                          </p>
+                        ) : null}
+                      </div>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusStyles(p.status)}`}
+                      >
+                        {p.status}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             ) : null}
           </CardContent>
         </Card>
